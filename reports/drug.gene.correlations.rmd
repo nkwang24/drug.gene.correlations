@@ -1,0 +1,126 @@
+---
+title: "Regularized multiple regression: drug sensitivity x gene vulnerability"
+author: Nicholas Wang
+output: html_document
+runtime: shiny_prerendered
+---
+
+### Motivation
+Building upon [Gonçalves et al.](https://www.biorxiv.org/content/10.1101/2020.01.14.905729v1.full), the following analysis extends their linear mixed models approach from single drug-gene pairs to regularized multiple regression of single drugs with all genes. The goal is to identify which gene knockouts best recapitulate the effects of individual drugs to elucidate  mechanism of action, unknown targets/side-effects, and small-molecule candidates with therapeutic potential.
+
+### Data
+Dataset           | File
+----------------- | ---------------
+GDSC2 drug data   | GDSC2_fitted_dose_response_15Oct19.xlsx  
+Broad CRISPR data | Achilles_gene_effect.csv  
+Cell line info    | sample_info.csv  
+
+### Methods
+glmnet R package  
+LASSO regression with min lambda from cvfit
+
+### Preliminary Results
+```{r setup, include=FALSE}
+library(tidyverse);
+library(readxl);
+library(glmnet);
+library(ggplot2);
+```
+
+```{r data, cache=TRUE, include=FALSE}
+# Import GDSC2 drug data
+df.drug <- read_excel('../data/GDSC2_fitted_dose_response_15Oct19.xlsx') %>% 
+  select(DRUG_NAME, COSMIC_ID, LN_IC50) %>% 
+  distinct(DRUG_NAME, COSMIC_ID, .keep_all = TRUE) %>% 
+  pivot_wider(names_from = DRUG_NAME, values_from = LN_IC50);
+
+# Import Broad CRISPR data
+df.gene <- read_csv('../data/Achilles_gene_effect.csv') %>% 
+  drop_na();
+
+# Cell line info
+df.sample <- read_csv('../data/sample_info.csv', col_types = cols(additional_info = col_character())) %>% 
+  select(DepMap_ID, stripped_cell_line_name, COSMIC_ID);
+```
+
+```{r echo=FALSE}
+selectInput(
+  inputId = 'drug',
+  label = 'Drug',
+  choices = colnames(df.drug)[-1]
+  );
+
+plotOutput('cvfit')
+tableOutput('fit')
+tableOutput('betas')
+plotOutput('betas.plot')
+```
+
+```{r context = 'server', echo=FALSE}
+lambdas <- 10^seq(2, -2, by = -0.1);
+
+df.drug.1 <- reactive({
+  merge(df.sample, select(df.drug, COSMIC_ID, input$drug), by = 'COSMIC_ID', all.y = TRUE) %>%
+    merge(df.gene, by.x = 'DepMap_ID', by.y = 'X1') %>%
+    filter(!is.na(input$drug)) %>%
+    drop_na() %>%
+    as_tibble()
+  });
+
+cvfit <- reactive({
+  cv.glmnet(
+    as.matrix(df.drug.1()[-(1:4)]),
+    pull(df.drug.1(), input$drug),
+    alpha = 1,
+    lambda = lambdas
+    );
+  });
+
+output$cvfit <- renderPlot({
+  plot(cvfit());
+  });
+
+fit.min <- reactive({
+  glmnet(
+    as.matrix(df.drug.1()[-(1:4)]),
+    pull(df.drug.1(), input$drug),
+    alpha = 1,
+    lambda = cvfit()$lambda.min
+    );
+  });
+
+output$fit <- renderTable({
+  print(fit.min())
+})
+
+betas.cor <- reactive({
+  betas <- coef(fit.min()) %>%
+    as.matrix() %>%
+    as.data.frame() %>%
+    rownames_to_column('gene') %>%
+    filter(s0 > 0, gene != '(Intercept)') %>%
+    arrange(desc(s0));
+  cors <- cor(df.drug.1()[input$drug], df.drug.1()[betas$gene]) %>%
+    t();
+  out <- cbind(betas, cors) %>%
+    rename(beta = s0, cor = input$drug);
+  rownames(out) <- NULL;
+  out
+})
+
+output$betas <- renderTable({
+  betas.cor()
+})
+
+output$betas.plot <- renderPlot({
+  ggplot(betas.cor(), aes(seq_len(length(beta)))) +
+    geom_line(aes(y = beta, color = 'beta')) +
+    geom_line(aes(y = cor, color = 'cor'))
+})
+```
+
+### Future Directions
+Adapting the model to fit single gene knockouts with the entire drug set to identify drugs or drug combinations best suited for targeting specific genes.
+
+
+
