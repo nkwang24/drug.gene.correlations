@@ -1,23 +1,22 @@
 ---
-title: "Regularized multiple regression: drug sensitivity x gene vulnerability"
+title: "Regularized Multiple Regression: Drug Sensitivity ~ Gene Vulnerability"
 author: Nicholas Wang
 output: html_document
 runtime: shiny_prerendered
 ---
 
 ### Motivation
-Building upon [Gonçalves et al.](https://www.biorxiv.org/content/10.1101/2020.01.14.905729v1.full), the following analysis extends their linear mixed models approach from single drug-gene pairs to regularized multiple regression of single drugs with all genes. The goal is to identify which gene knockouts best recapitulate the effects of individual drugs to elucidate  mechanism of action, unknown targets/side-effects, and small-molecule candidates with therapeutic potential.
+With the recent availability of drug sensitivity and gene vulnerability data across a wide representation of cancer cell lines, many attempts have been made to cross-analyze these datasets to elucidate cancer vulnerabilities and derive novel therapeutic targets. The most recent work in this area by [Gonçalves et al.](https://www.biorxiv.org/content/10.1101/2020.01.14.905729v1.full) applied linear mixed models to single drug-gene pairs to identify gene knockouts that most strongly correlated with the effects of specific drugs. Drug-gene pairs with statistically significant correlations were evaluated based on concordance with the drug’s putative target or proximity to it in protein interaction networks. Enrichment for on-target effects were found and novel biological insights were presented providing evidence for this method as a promising approach.
+
+The following data visualization is a continuation of Gonçalves et al.’s work extending their linear mixed model approach from single drug-gene pairs to regularized multiple regression of drugs with the entire gene set. By incorporating multiple regression to account for collinearities between gene data and LASSO regularization for feature selection, it was hypothesized that the resulting regression coefficients will be able to better discriminate direct from indirect drug-gene relations. The ability for this model to account for multiple drug-gene interaction paradigms highlights its biological relevance and utility in screening new drugs and small-molecule compounds for therapeutic potential.
 
 ### Data
-Dataset           | File
------------------ | ---------------
-GDSC2 drug data   | GDSC2_fitted_dose_response_15Oct19.xlsx  
-Broad CRISPR data | Achilles_gene_effect.csv  
-Cell line info    | sample_info.csv  
+Drug sensitivity data was provided by the Genomics of Drug Sensitivity in Cancer (GDSC) Project where 809 drugs were screened across 170 pan-cancer cell lines. Drug sensitivity was measured as the area-under-curve of the dose-response curve.
+
+Gene vulnerability data was provided by Project Achilles from the Broad Institute where 18,334 genes were screened across 683 pan-cancer cell lines. Gene vulnerability was measured as ratio of knockout cell viability to untreated control. Loss-of-function screen was done through CRISPR gene knockout.
 
 ### Methods
-glmnet R package  
-LASSO regression with min lambda from cvfit
+Regularized multiple linear regression was done in R using the glmnet package with LASSO parameter λ chosen to minimize the mean-squared error during cross-validation. Single regression was done using drug-gene pair correlations.
 
 ### Preliminary Results
 ```{r setup, include=FALSE}
@@ -37,6 +36,7 @@ df.drug <- read_excel('../data/GDSC2_fitted_dose_response_15Oct19.xlsx') %>%
 # Import Broad CRISPR data
 df.gene <- read_csv('../data/Achilles_gene_effect.csv') %>% 
   drop_na();
+names(df.gene) <- sub(' .*', '', names(df.gene));
 
 # Cell line info
 df.sample <- read_csv('../data/sample_info.csv', col_types = cols(additional_info = col_character())) %>% 
@@ -50,10 +50,14 @@ selectInput(
   choices = colnames(df.drug)[-1]
   );
 
-plotOutput('cvfit')
 tableOutput('fit')
-tableOutput('betas')
 plotOutput('betas.plot')
+plotOutput('betas.plot2')
+
+tableOutput('betas')
+tableOutput('all.cors')
+
+plotOutput('cvfit')
 ```
 
 ```{r context = 'server', echo=FALSE}
@@ -98,29 +102,75 @@ betas.cor <- reactive({
     as.matrix() %>%
     as.data.frame() %>%
     rownames_to_column('gene') %>%
-    filter(s0 > 0, gene != '(Intercept)') %>%
-    arrange(desc(s0));
+    filter(s0 != 0, gene != '(Intercept)') %>%
+    arrange(desc(abs(s0)));
   cors <- cor(df.drug.1()[input$drug], df.drug.1()[betas$gene]) %>%
     t();
   out <- cbind(betas, cors) %>%
     rename(beta = s0, cor = input$drug);
   rownames(out) <- NULL;
-  out
+  head(out, 10)
 })
 
 output$betas <- renderTable({
   betas.cor()
 })
 
-output$betas.plot <- renderPlot({
-  ggplot(betas.cor(), aes(seq_len(length(beta)))) +
-    geom_line(aes(y = beta, color = 'beta')) +
-    geom_line(aes(y = cor, color = 'cor'))
+all.cors <- reactive({
+  all.cors <- cor(df.drug.1()[input$drug], df.drug.1()[-(1:4)]) %>% 
+    t() %>% 
+    as.matrix() %>% 
+    as.data.frame() %>% 
+    rownames_to_column('gene') %>% 
+    #arrange(desc(abs(get(input$drug)))) %>% 
+    rename(cor = input$drug) %>% 
+    #head(10) %>% 
+    merge(select(betas.cor(), -cor), by = 'gene', all.x = TRUE) %>% 
+    arrange(desc(abs(cor))) %>% 
+    head(10);
+  all.cors[is.na(all.cors)] <- 0;
+  all.cors;
 })
+
+output$all.cors <- renderTable({
+  all.cors()
+})
+
+output$betas.plot <- renderPlot({
+  ggplot(betas.cor(), aes(x = factor(betas.cor()$gene, levels = betas.cor()$gene))) +
+    geom_line(aes(y = abs(beta), color = 'beta', group = 1)) +
+    geom_line(aes(y = abs(cor), color = 'cor', group = 1)) +
+    geom_point(aes(y = abs(beta), color = 'beta')) +
+    geom_point(aes(y = abs(cor), color = 'cor')) +
+    xlab('') + ylab('abs coef') +
+    ggtitle('Coefficients ordered by betas') +
+    theme_bw() +
+    scale_colour_hue(name = '') +
+    theme(axis.text.x = element_text(angle = -45, vjust = 0))
+})
+
+output$betas.plot2 <- renderPlot({
+  ggplot(all.cors(), aes(x = factor(all.cors()$gene, levels = all.cors()$gene))) +
+    geom_line(aes(y = abs(beta), color = 'beta', group = 1)) +
+    geom_line(aes(y = abs(cor), color = 'cor', group = 1)) +
+    geom_point(aes(y = abs(beta), color = 'beta')) +
+    geom_point(aes(y = abs(cor), color = 'cor')) +
+    xlab('') + ylab('abs coef') +
+    ggtitle('Coefficients ordered by correlation') +
+    theme_bw() +
+    scale_colour_hue(name = '') +
+    theme(axis.text.x = element_text(angle = -45, vjust = 0))
+})
+
+# output$betas.plot2 <- renderPlot({
+#   ggplot(all.cors(), aes(seq_len(length(beta)))) +
+#     geom_line(aes(y = abs(beta), color = 'beta')) +
+#     geom_line(aes(y = abs(cor), color = 'cor')) +
+#     geom_point(aes(y = abs(beta), color = 'beta')) +
+#     geom_point(aes(y = abs(cor), color = 'cor'))
+# })
 ```
 
 ### Future Directions
-Adapting the model to fit single gene knockouts with the entire drug set to identify drugs or drug combinations best suited for targeting specific genes.
-
-
+While the dataset presented here provides clear examples of where multiple regression outperforms single regression, a systematic analysis of the results still needs to be done. Future steps would entail construction of quantitative metrics to evaluate the validity of the model as well as functional testing to confirm whether results not corroborated by current knowledge are novel findings or simply artifacts due to unaccounted confounders or issues with the model. Once this is done, the validated model can then be leveraged to great effect in screening existing drugs for unknown effects and new compounds for therapeutic potential.
 
