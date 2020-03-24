@@ -1,84 +1,116 @@
 ---
 title: "Cancer Drug/Gene Vulnerability Dashboard"
-author: "Nicholas Wang"
-date: "3/16/2020"
 output:
   flexdashboard::flex_dashboard:
     orientation: rows
     source_code: embed
 runtime: shiny_prerendered
+
+# Nicholas Wang
+# 3/16/20
 ---
 
 ```{r setup, include=FALSE}
 library(tidyverse);
 library(readxl);
-library(glmnet);
 library(ggplot2);
+library(glmnet);
 knitr::opts_chunk$set(echo = FALSE);
 ```
 
-```{r data, cache=TRUE, include=FALSE}
+```{r load data, context = 'data', cache=TRUE, include=FALSE}
 # Import GDSC2 drug data
 df.drug <- read_excel('../data/GDSC2_fitted_dose_response_15Oct19.xlsx') %>% 
   select(DRUG_NAME, COSMIC_ID, LN_IC50) %>% 
   distinct(DRUG_NAME, COSMIC_ID, .keep_all = TRUE) %>% 
   pivot_wider(names_from = DRUG_NAME, values_from = LN_IC50) %>% 
   select(names(.)[1], sort(names(.)));
+drug.list <- colnames(df.drug)[-1];
 
 # Import Broad CRISPR data
 df.gene <- read_csv('../data/Achilles_gene_effect.csv') %>% 
   drop_na();
 names(df.gene) <- sub(' .*', '', names(df.gene));
+gene.list <- colnames(df.gene)[-1];
 
 # Cell line info
 df.sample <- read_csv('../data/sample_info.csv', col_types = cols(additional_info = col_character())) %>% 
   select(DepMap_ID, stripped_cell_line_name, COSMIC_ID);
+
+df.merged <-
+  merge(df.sample, df.drug, by = 'COSMIC_ID', all.y = TRUE) %>%
+  merge(df.gene, by.x = 'DepMap_ID', by.y = 'X1');
+
+rm('df.drug', 'df.gene', 'df.sample');
 ```
+
+```{r generate fits, context = 'data', cache=TRUE, include=FALSE}
+# Generate cross-validation fits for all drugs
+lambdas <- 10^seq(1.5, -2, by = -0.1);
+cvfit <- vector('list', length(drug.list));
+
+for(i in seq_along(drug.list)) {
+  cvfit[[i]] <- glmnet::cv.glmnet(
+    df.merged %>% 
+      drop_na(drug.list[i]) %>% 
+      select(!!gene.list) %>% 
+      as.matrix(),
+    df.merged %>% 
+      drop_na(drug.list[i]) %>% 
+      pull(!!drug.list[i]),
+    alpha = 1,
+    lambda = lambdas
+  );
+};
+```
+
+Drug ~ Gene(CRISPR)
+===================================================================================================
 
 Sidebar {.sidebar}
 ---------------------------------------------------------------------------------------------------
-```{r}
+```{r inputs}
 selectInput(
   inputId = 'drug',
   label = 'Drug',
-  choices = colnames(df.drug)[-1],
+  choices = drug.list,
   selected = 'Venetoclax'
   );
 
 selectizeInput(
   inputId = 'gene',
   label = 'Gene',
-  choices = colnames(df.gene)[-1],
+  choices = gene.list,
   selected = 'BCL2',
   options = list(maxOptions = 20000)
   );
 ```
 
-Row {data-height=400}
+Row {data-height=350}
 ---------------------------------------------------------------------------------------------------
-### Multiple Regression Fit Summary {data-width=400}
+### Multiple Regression Fit Summary
 ```{r}
 tableOutput('fit');
 ```
 
 Row {data-height=1200}
 ---------------------------------------------------------------------------------------------------
-### Top 10 Genes Ordered By Multiple Regression Betas {data-width=200}
+### Non-Zero Genes Ordered By Betas {data-width=200}
 ```{r}
-tableOutput('betas');
+tableOutput('betas.table');
 ```
 
-### Top 10 Genes Ordered By Correlation {data-width=200}
+### Top 20 Genes Ordered By Correlation {data-width=200}
 ```{r}
-tableOutput('all.cors');
+tableOutput('cors.out');
 ```
 
-### Coefficients Ordered By Betas {data-width=400}
+### Top 20 Coefficients Ordered By Betas {data-width=400}
 ```{r}
 plotOutput('betas.plot', width = '500px');
 ```
 
-### Coefficients Ordered By Correlation {data-width=400}
+### Top 20 Coefficients Ordered By Correlation {data-width=400}
 ```{r}
 plotOutput('betas.plot2', width = '500px');
 ```
@@ -95,84 +127,109 @@ plotOutput('scatter');
 plotOutput('cvfit');
 ```
 
+Drug ~ Gene(RNAi)
+===================================================================================================
+
+Gene(CRISPR) ~ Gene(RNAi)
+===================================================================================================
+
+README
+===================================================================================================
+Row
+---------------------------------------------------------------------------------------------------
+### Motivation
+With the recent availability of drug sensitivity and gene vulnerability data across a wide representation of cancer cell lines, many attempts have been made to cross-analyze these datasets to elucidate cancer vulnerabilities and derive novel therapeutic targets. The most recent work in this area by [Gonçalves et al.](https://www.biorxiv.org/content/10.1101/2020.01.14.905729v1.full) applied linear mixed models to single drug-gene pairs to identify gene knockouts that most strongly correlated with the effects of specific drugs. Drug-gene pairs with statistically significant correlations were evaluated based on concordance with the drug’s putative target or proximity to it in protein interaction networks. Enrichment for on-target effects were found and novel biological insights were presented providing evidence for this method as a promising approach.
+
+This data visualization is a continuation of Gonçalves et al.’s work extending their linear mixed model approach from single drug-gene pairs to regularized multiple regression of drugs with the entire gene set. By incorporating multiple regression to account for collinearities between gene data and LASSO regularization for feature selection, it is hypothesized that the resulting regression coefficients are better able to discriminate direct from indirect drug-gene relations. The ability for this model to account for multiple drug-gene interaction paradigms highlights its biological relevance and utility in screening new drugs and small-molecule compounds for therapeutic potential.
+
+### Methods
+Regularized multiple linear regression was done in R using the glmnet package with LASSO parameter λ chosen to minimize the mean-squared error during cross-validation. Single regression was done using drug-gene pair correlations.
+
+Drug sensitivity data was provided by the Genomics of Drug Sensitivity in Cancer (GDSC) Project where 809 drugs were screened across 170 pan-cancer cell lines. Drug sensitivity was measured as the area-under-curve of the dose-response curve.
+
+Gene vulnerability data was provided by Project Achilles from the Broad Institute where 18,334 genes were screened across 683 pan-cancer cell lines. Loss-of-function screen was done through CRISPR gene knockout. Gene vulnerability was measured as ratio of knockout cell viability to untreated control.
+
+### Future Directions
+While the dataset presented here can be used to highlight examples of where multiple regression outperforms single regression, a systematic analysis of the results still needs to be done. Future steps would entail construction of quantitative metrics to evaluate the validity of the model as well as functional testing to confirm whether results not corroborated by current knowledge are novel findings or simply artifacts due to unaccounted confounders or issues with the model. Once this is done, the validated model can then be leveraged to great effect in screening existing drugs for unknown effects and new compounds for therapeutic potential.
+
 ```{r context = 'server'}
-lambdas <- 10^seq(2, -2, by = -0.1);
-
-df.drug.1 <- reactive({
-  merge(df.sample, select(df.drug, COSMIC_ID, input$drug), by = 'COSMIC_ID', all.y = TRUE) %>%
-    merge(df.gene, by.x = 'DepMap_ID', by.y = 'X1') %>%
-    filter(!is.na(input$drug)) %>%
-    drop_na() %>%
-    as_tibble()
-  });
-
-cvfit <- reactive({
-  cv.glmnet(
-    as.matrix(df.drug.1()[-(1:4)]),
-    pull(df.drug.1(), input$drug),
-    alpha = 1,
-    lambda = lambdas
-    );
-  });
-
-output$cvfit <- renderPlot({
-  plot(cvfit());
-  });
-
-fit.min <- reactive({
-  glmnet(
-    as.matrix(df.drug.1()[-(1:4)]),
-    pull(df.drug.1(), input$drug),
-    alpha = 1,
-    lambda = cvfit()$lambda.min
-    );
-  });
-
-output$fit <- renderTable({
-  print(fit.min());
+# Select fit
+cvfit.1 <- reactive({
+  cvfit[[which(drug.list == input$drug)]];
 });
 
-betas.cor <- reactive({
-  betas <- coef(fit.min()) %>%
+# Plot lambda cross-validation
+output$cvfit <- renderPlot({
+  plot(cvfit.1());
+  });
+
+# Get lambda.min index
+minfit <- reactive({
+  which(lambdas == cvfit.1()$lambda.min);
+});
+
+# Print min fit summary
+output$fit <- renderTable({
+  data.frame(
+    'non.zero.betas' = cvfit.1()$glmnet.fit$df[minfit()] %>% as.integer(),
+    'percent.var.explained' = cvfit.1()$glmnet.fit$dev.ratio[minfit()] * 100,
+    'min.MSE.lambda' = cvfit.1()$glmnet.fit$lambda[minfit()]
+  );
+});
+
+# Top genes sorted by betas
+betas.out <- reactive({
+  betas <- coef(cvfit.1()$glmnet.fit) %>%
+    as.matrix() %>%
+    as.data.frame() %>%
+    select(!!minfit()) %>%
+    rename(beta = 1) %>%
+    rownames_to_column('gene') %>%
+    filter(beta != 0, gene != '(Intercept)') %>%
+    arrange(desc(abs(beta)));
+  cors <- cor(
+    df.merged %>% drop_na(!!input$drug) %>% select(!!input$drug),
+    df.merged %>% drop_na(!!input$drug) %>% select(!!betas$gene)
+    ) %>%
+    t();
+  out <- cbind(betas, cors) %>%
+    rename(cor = input$drug);
+  rownames(out) <- NULL;
+  out;
+});
+
+output$betas.table <- renderTable({
+  betas.out();
+});
+
+# Top genes sorted by correlations
+cors.out <- reactive({
+  all.cors <- cor(
+    df.merged %>% drop_na(!!input$drug) %>% select(!!input$drug),
+    df.merged %>% drop_na(!!input$drug) %>% select(!!gene.list)
+    ) %>%
+    t() %>%
     as.matrix() %>%
     as.data.frame() %>%
     rownames_to_column('gene') %>%
-    filter(s0 != 0, gene != '(Intercept)') %>%
-    arrange(desc(abs(s0)));
-  cors <- cor(df.drug.1()[input$drug], df.drug.1()[betas$gene]) %>%
-    t();
-  out <- cbind(betas, cors) %>%
-    rename(beta = s0, cor = input$drug);
-  rownames(out) <- NULL;
-  head(out, 10);
-});
-
-output$betas <- renderTable({
-  betas.cor();
-});
-
-all.cors <- reactive({
-  all.cors <- cor(df.drug.1()[input$drug], df.drug.1()[-(1:4)]) %>% 
-    t() %>% 
-    as.matrix() %>% 
-    as.data.frame() %>% 
-    rownames_to_column('gene') %>% 
-    #arrange(desc(abs(get(input$drug)))) %>% 
-    rename(cor = input$drug) %>% 
-    #head(10) %>% 
-    merge(select(betas.cor(), -cor), by = 'gene', all.x = TRUE) %>% 
-    arrange(desc(abs(cor))) %>% 
-    head(10);
+    rename(cor = input$drug) %>%
+    merge(select(betas.out(), -cor), by = 'gene', all.x = TRUE) %>%
+    arrange(desc(abs(cor))) %>%
+    head(20);
   all.cors[is.na(all.cors)] <- 0;
   all.cors;
 });
 
-output$all.cors <- renderTable({
-  all.cors();
+output$cors.out <- renderTable({
+  cors.out();
 });
 
+# Plot top genes sorted by betas
 output$betas.plot <- renderPlot({
-  ggplot(betas.cor(), aes(x = factor(betas.cor()$gene, levels = betas.cor()$gene))) +
+  ggplot(
+    betas.out() %>% head(20),
+    aes(x = factor(betas.out()$gene %>% head(20), levels = betas.out()$gene %>% head(20)))
+    ) +
     geom_line(aes(y = abs(beta), color = 'beta', group = 1)) +
     geom_line(aes(y = abs(cor), color = 'cor', group = 1)) +
     geom_point(aes(y = abs(beta), color = 'beta')) +
@@ -183,8 +240,9 @@ output$betas.plot <- renderPlot({
     theme(axis.text.x = element_text(angle = -45, vjust = 0));
 });
 
+# Plot top genes sorted by correlation
 output$betas.plot2 <- renderPlot({
-  ggplot(all.cors(), aes(x = factor(all.cors()$gene, levels = all.cors()$gene))) +
+  ggplot(cors.out(), aes(x = factor(cors.out()$gene, levels = cors.out()$gene))) +
     geom_line(aes(y = abs(beta), color = 'beta', group = 1)) +
     geom_line(aes(y = abs(cor), color = 'cor', group = 1)) +
     geom_point(aes(y = abs(beta), color = 'beta')) +
@@ -195,8 +253,9 @@ output$betas.plot2 <- renderPlot({
     theme(axis.text.x = element_text(angle = -45, vjust = 0));
 });
 
+# Scatter plot of drug with selected gene
 output$scatter <- renderPlot({
-  ggplot(df.drug.1(), aes(x = get(input$drug), y = get(input$gene))) +
+  ggplot(df.merged, aes(x = get(input$drug), y = get(input$gene))) +
     geom_point() +
     geom_smooth(method = lm) +
     xlab(input$drug) +
@@ -205,7 +264,8 @@ output$scatter <- renderPlot({
 ```
 
 ```{r}
-# deployApp(
+# # Deploy Shiny app to shinyapps.io
+# rsconnect::deployApp(
 #   appDir = './reports',
 #   appFiles = c(
 #     'drug.gene.dashboard.rmd',
@@ -215,4 +275,3 @@ output$scatter <- renderPlot({
 #   appName = 'cancer-vulnerability-dashboard'
 #   );
 ```
-

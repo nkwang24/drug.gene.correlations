@@ -10,13 +10,15 @@
 library(tidyverse);
 library(readxl);
 library(glmnet);
+library(ggplot2);
 
 ## Read data --------------------------------------------------------------------------------------
 # Import GDSC2 drug data
 df.drug <- read_excel('./data/GDSC2_fitted_dose_response_15Oct19.xlsx') %>% 
   select(DRUG_NAME, COSMIC_ID, LN_IC50) %>% 
   distinct(DRUG_NAME, COSMIC_ID, .keep_all = TRUE) %>% 
-  pivot_wider(names_from = DRUG_NAME, values_from = LN_IC50);
+  pivot_wider(names_from = DRUG_NAME, values_from = LN_IC50) %>% 
+  select(names(.)[1], sort(names(.)));
 
 # Import Broad CRISPR data
 df.gene <- read_csv('./data/Achilles_gene_effect.csv') %>% 
@@ -28,7 +30,7 @@ df.sample <- read_csv('./data/sample_info.csv', col_types = cols(additional_info
 
 ## Build model ------------------------------------------------------------------------------------
 # Merge single drug with gene data
-drug <- 'Dabrafenib';
+drug <- 'Venetoclax';
 df.drug.1 <- merge(df.sample, select(df.drug, COSMIC_ID, drug), by = 'COSMIC_ID', all.y = TRUE) %>% 
   merge(df.gene, by.x = 'DepMap_ID', by.y = 'X1') %>% 
   filter(!is.na(!!as.name(drug))) %>% 
@@ -61,7 +63,7 @@ betas <- coef(fit.1se) %>%
   as.matrix() %>% 
   as.data.frame() %>% 
   rownames_to_column('gene') %>% 
-  filter(s0 > 0, gene != '(Intercept)') %>% 
+  filter(s0 != 0, gene != '(Intercept)') %>% 
   arrange(desc(s0));
 cors <- cor(df.drug.1[drug], df.drug.1[betas$gene]) %>%
   t();
@@ -75,12 +77,15 @@ all.cors <- cor(df.drug.1[drug], df.drug.1[-(1:4)]) %>%
   as.matrix() %>% 
   as.data.frame() %>% 
   rownames_to_column('gene') %>% 
-  arrange(desc(Dabrafenib))
+  arrange(desc(get(drug)))
 head(all.cors, 10)
 
 # Scatter plot of drug-gene pair
 plot(df.drug.1[[drug]], df.drug.1[['BRAF (673)']])
 
+ggplot(out, aes(seq_len(length(beta)))) +
+  geom_line(aes(y = beta, color = 'beta')) +
+  geom_line(aes(y = cor, color = 'cor'))
 
 
 
