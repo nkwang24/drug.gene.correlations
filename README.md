@@ -1,4 +1,6 @@
-# drug.gene.correlations
+# Cancer Vulnerability Dashboard
+
+https://nkwang24.shinyapps.io/cancer-vulnerability-dashboard/
 
 ### Motivation
 With the recent availability of drug sensitivity and gene vulnerability data across a wide representation of cancer cell lines, many attempts have been made to cross-analyze these datasets to elucidate cancer vulnerabilities and derive novel therapeutic targets. The most recent work in this area by [Gonçalves et al.](https://www.biorxiv.org/content/10.1101/2020.01.14.905729v1.full) applied linear mixed models to single drug-gene pairs to identify gene knockouts that most strongly correlated with the effects of specific drugs. Drug-gene pairs with statistically significant correlations were evaluated based on concordance with the drug’s putative target or proximity to it in protein interaction networks. Enrichment for on-target effects were found and novel biological insights were presented providing evidence for this method as a promising approach.
